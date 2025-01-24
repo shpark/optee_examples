@@ -1,0 +1,3 @@
+[submodule "cose_samples/ta/third_party/t_cose"]
+	path = cose_samples/ta/third_party/t_cose
+	url = https://github.com/shpark/t_cose
