@@ -1,4 +1,4 @@
-project (optee_example_cwt C)
+project (optee_example_cose_samples C)
 
 set (SRC host/main.c)
 

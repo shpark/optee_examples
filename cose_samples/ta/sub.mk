@@ -17,6 +17,9 @@ srcs-y += third_party/QCBOR/src/UsefulBuf.c
 # t_cose
 global-incdirs-y += third_party/t_cose/inc
 global-incdirs-y += third_party/t_cose/src
+global-incdirs-y += third_party/t_cose/test
+
+cflags-y += -DT_COSE_USE_GP_TEE_CRYPTO=1
 
 cflags-y += -DT_COSE_DISABLE_SHORT_CIRCUIT_SIGN
 cflags-y += -DT_COSE_USE_OPENSSL_CRYPTO=0
