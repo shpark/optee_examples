@@ -291,6 +291,9 @@ static enum t_cose_err_t public_key_from(struct t_cose_key signing_key,
 	 * XXX: this buffer resides in stack, and its content may be clobbered
 	 * later, leading the signature verification fail...
 	 *
+	 * Even worse, attribute X and Y are pointing to the same buffer now.
+	 * Yet I am too tired to fix this now. I will fix it later.
+	 *
 	 * How to fix? Allocate a buffer that lives long enough and make the
 	 * attribute buffer pointer points to that buffer...
 	 */
