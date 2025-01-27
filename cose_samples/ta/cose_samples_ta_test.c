@@ -3,6 +3,7 @@
  * Copyright (c) 2025, Seonghyun Park
  */
 
+#include <stdint.h>
 #include <tee_api.h>
 #include <tee_api_defines.h>
 #include <tee_api_types.h>
@@ -24,6 +25,11 @@
 #include <t_cose_make_test_pub_key.h>
 
 #include "cose_samples_ta_test.h"
+#include "qcbor/UsefulBuf.h"
+#include "t_cose/q_useful_buf.h"
+#include "t_cose_standard_constants.h"
+#include "tee_api_compat.h"
+#include "utee_defines.h"
 
 /*
  * SEQUENCE
@@ -68,29 +74,44 @@ static void hexdump(const char *buf, size_t len)
 static int my_entropy(void *data, unsigned char *seed, size_t seed_len)
 {
 	(void)data;
+
+	DMSG("what?");
+
 	TEE_GenerateRandom(seed, seed_len);
+
+	DMSG("huh?");
+
 	return 0;
 }
 
-static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk) {
+static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
+				    unsigned char *point_buf,
+				    size_t point_buf_len,
+				    unsigned char *d_buf,
+				    size_t d_buf_len)
+{
 	mbedtls_ctr_drbg_context ctr_dbrg;
-	mbedtls_entropy_context entropy;
 	mbedtls_ecp_keypair *ecp;
 	int status;
 
 	mbedtls_ctr_drbg_init(&ctr_dbrg);
-	mbedtls_entropy_init(&entropy);
+
+	DMSG("ugh 000a");
 
 	status = mbedtls_ctr_drbg_seed(&ctr_dbrg,
 				       my_entropy,
-				       &entropy,
+				       NULL,
 				       NULL, 0);
 	if (status != 0) {
 		EMSG("mbedtls_ctr_drbg_seed() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
 
+	DMSG("ugh 000c");
+
 	mbedtls_pk_init(pk);
+
+	DMSG("ugh 001");
 
 	status = mbedtls_pk_parse_key(pk,
 				      private_key_pem,
@@ -102,6 +123,8 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk) {
 		EMSG("mbedtls_pk_parse_key() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
+
+	DMSG("ugh 002");
 
 	/* Check PEM key type */
 	/*
@@ -115,6 +138,8 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk) {
 		return TEE_ERROR_GENERIC;
 	}
 
+	DMSG("ugh 003");
+
 	ecp = mbedtls_pk_ec(*pk);
 
 	/* Check ECP group id */
@@ -123,90 +148,298 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk) {
 		return TEE_ERROR_GENERIC;
 	}
 
+	DMSG("ugh 004");
+
 	/* Export the private key */
 	mbedtls_ecp_group grp = { };
 	mbedtls_mpi d = { };
 	mbedtls_ecp_point q = { };
 
+	/* XXX: what would happen if `ecp` doesn't have `d` (i.e., pubkey)? */
 	status = mbedtls_ecp_export(ecp, &grp, &d, &q);
 	if (status != 0) {
 		EMSG("mbedtls_ecp_export() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
 
-	unsigned char point[1 + 2 * 32] = { };
-	size_t olen = 0;
+	DMSG("ugh 005");
 
+	size_t olen = 0;
 	status = mbedtls_ecp_point_write_binary(&grp, &q,
 						MBEDTLS_ECP_PF_UNCOMPRESSED,
 						&olen,
-						point, sizeof(point));
+						point_buf, point_buf_len);
 	if (status) {
 		EMSG("mbedtls_ecp_point_write_binary() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
 
-	unsigned char d_buf[32] = { };
+	DMSG("ugh 006");
 
-	status = mbedtls_mpi_write_binary(&d, d_buf, sizeof(d_buf));
+	status = mbedtls_mpi_write_binary(&d, d_buf, d_buf_len);
 	if (status) {
 		EMSG("mbedtls_mpi_write_binary() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
 
-	DMSG("d:"); hexdump((const char *)d_buf, sizeof(d_buf));
+	DMSG("d:");
 
-	DMSG("Q:"); hexdump((const char *)point + 1, sizeof(point) - 1);
+	hexdump((const char *)d_buf, d_buf_len);
+
+	DMSG("Q:");
+
+	hexdump((const char *)point_buf + 1, point_buf_len - 1);
 
 	/* TODO: error handling and graceful clean up (should I? hehehe) */
 
 	return TEE_SUCCESS;
 }
 
-enum t_cose_err_t make_key_pair(int32_t            cose_algorithm_id,
-				struct t_cose_key *key_pair) {
+enum t_cose_err_t make_key_pair(int32_t cose_algorithm_id,
+				struct t_cose_key *key_pair)
+{
 	TEE_ObjectHandle obj = TEE_HANDLE_NULL;
-	TEE_Attribute curve = { };
+	TEE_Attribute attrs[4] = { };
 	TEE_Result res = TEE_ERROR_GENERIC;
 
-	/* TODO: Support different algorithms, e.g., P-384 */
-	(void)cose_algorithm_id;
+	switch (cose_algorithm_id) {
+	case T_COSE_ALGORITHM_ES256:
+		TEE_InitValueAttribute(&attrs[3], TEE_ATTR_ECC_CURVE,
+				       TEE_ECC_CURVE_NIST_P256, 0);
+		break; 
+	default:
+		/* TODO: Support different algorithms... */
+		EMSG("alg (%x) currently not supported", cose_algorithm_id);
+		return T_COSE_ERR_UNSUPPORTED_SIGNING_ALG;
+	}
 
 	res = TEE_AllocateTransientObject(TEE_TYPE_ECDSA_KEYPAIR, 256, &obj);
 	if (res != TEE_SUCCESS)
 		return T_COSE_ERR_FAIL;
 
-	TEE_InitValueAttribute(&curve, TEE_ATTR_ECC_CURVE,
-			       TEE_ECC_CURVE_NIST_P256, 0);
+	mbedtls_pk_context pk = { };
 
-	res = TEE_GenerateKey(obj, 256, &curve, 1);
-	if (res != TEE_SUCCESS)
+	DMSG("eek 001");
+
+	/* Set buffer attributes of `obj` with values stored in `pk` */
+	unsigned char point[1 + 2 * 32] = { }; /* uncompressed P-256 point */
+	unsigned char d[32] = { };
+
+	res = pem_to_mbedtls_pk(&pk, point, sizeof(point), d, sizeof(d));
+	if (res != TEE_SUCCESS) {
+		EMSG("pem_to_mbedtls_pk()");
 		return T_COSE_ERR_FAIL;
+	}
+
+	DMSG("eek 002");
+
+	TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PRIVATE_VALUE, d,
+			     sizeof(d));
+
+	TEE_InitRefAttribute(&attrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_X,
+			     &point[1], 32);
+
+	TEE_InitRefAttribute(&attrs[2], TEE_ATTR_ECC_PUBLIC_VALUE_Y,
+			     &point[1 + 32], 32);
+
+	res = TEE_PopulateTransientObject(obj, attrs, 4);
+	if (res != TEE_SUCCESS) {
+		EMSG("TEE_PopoulateTransientObject() res=%x", res);
+		return T_COSE_ERR_FAIL;
+	}
 
 	key_pair->k.key_obj = obj;
 
+	mbedtls_pk_free(&pk);
+
 	return T_COSE_SUCCESS;
+}
+
+static enum t_cose_err_t public_key_from(struct t_cose_key signing_key,
+					 struct t_cose_key *out_public_key)
+{
+	TEE_ObjectHandle keypair = signing_key.k.key_obj;
+	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
+	TEE_ObjectInfo info = { };
+	uint32_t curve;
+	TEE_Attribute attrs[3] = { };
+	TEE_ObjectHandle obj = TEE_HANDLE_NULL;
+
+	DMSG("ding 001");
+
+	res = TEE_GetObjectInfo1(keypair, &info);
+
+	if (info.objectType != TEE_TYPE_ECDSA_KEYPAIR)
+		return T_COSE_ERR_INVALID_ARGUMENT;
+
+	DMSG("ding 002");
+
+	res = TEE_GetObjectValueAttribute(keypair, TEE_ATTR_ECC_CURVE, &curve,
+					  NULL);
+	if (res != TEE_SUCCESS)
+		return T_COSE_ERR_INVALID_ARGUMENT;
+
+	DMSG("ding 003");
+
+	res = TEE_AllocateTransientObject(TEE_TYPE_ECDSA_PUBLIC_KEY,
+					  info.maxKeySize,
+					  &obj);
+	if (res != TEE_SUCCESS)
+		return res;
+
+	/*
+	 * XXX: this buffer resides in stack, and its content may be clobbered
+	 * later, leading the signature verification fail...
+	 *
+	 * How to fix? Allocate a buffer that lives long enough and make the
+	 * attribute buffer pointer points to that buffer...
+	 */
+	unsigned char buf[32] = { }; /* FIXME: Don't use fixed size buffer... */
+	uint32_t size = sizeof(buf);
+
+	DMSG("ding 004");
+
+	res = TEE_GetObjectBufferAttribute(keypair, TEE_ATTR_ECC_PUBLIC_VALUE_X,
+					   buf, &size);
+	if (size != sizeof(buf))
+		res = TEE_ERROR_BAD_STATE;
+	if (res != TEE_SUCCESS)
+		goto out;
+
+	TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, buf, size);
+
+	res = TEE_GetObjectBufferAttribute(keypair, TEE_ATTR_ECC_PUBLIC_VALUE_Y,
+					   buf, &size);
+	if (size != sizeof(buf))
+		res = TEE_ERROR_BAD_STATE;
+	if (res != TEE_SUCCESS)
+		goto out;
+
+	TEE_InitRefAttribute(&attrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, buf, size);
+
+	TEE_InitValueAttribute(&attrs[2], TEE_ATTR_ECC_CURVE, curve, 0);
+
+	res = TEE_PopulateTransientObject(obj, attrs, 3);
+	if (res != TEE_SUCCESS)
+		goto out;
+
+	out_public_key->k.key_obj = obj;
+
+	return T_COSE_SUCCESS;
+
+out:
+	TEE_FreeTransientObject(obj);
+	return res == TEE_SUCCESS ? T_COSE_SUCCESS : T_COSE_ERR_FAIL;
+}
+
+static enum t_cose_err_t t_cose_hash_test(struct q_useful_buf_c data_to_hash,
+					  struct q_useful_buf hash_buffer,
+					  struct q_useful_buf_c *hash_result)
+{
+	struct t_cose_crypto_hash hash_ctx = { };
+	enum t_cose_err_t status = T_COSE_ERR_FAIL;
+
+	status = t_cose_crypto_hash_start(&hash_ctx, COSE_ALGORITHM_SHA_256);
+	if (status != 0)
+		return status;
+
+	t_cose_crypto_hash_update(&hash_ctx, data_to_hash);
+
+	status = t_cose_crypto_hash_finish(&hash_ctx,
+					   hash_buffer,
+					   hash_result);
+
+	return status;
+}
+
+static enum t_cose_err_t t_cose_sign_test(int32_t alg,
+					  struct t_cose_key signing_key,
+					  struct q_useful_buf_c digest,
+					  struct q_useful_buf sig_buffer,
+					  struct q_useful_buf_c *sig_result)
+{
+	return t_cose_crypto_sign(alg, signing_key,
+				  digest, sig_buffer, sig_result);
+}
+
+static enum t_cose_err_t t_cose_verify_test(int32_t alg,
+					    struct t_cose_key verification_key,
+					    struct q_useful_buf_c digest,
+					    struct q_useful_buf_c sig)
+{
+	return t_cose_crypto_verify(alg, verification_key,
+				    /* kid=*/ NULL_Q_USEFUL_BUF_C,
+				   digest, sig);
 }
 
 TEE_Result run_tests(void)
 {
 	TEE_Result res = TEE_SUCCESS;
+	struct t_cose_key signing_key = { };
+	struct t_cose_key verification_key = { };
+	enum t_cose_err_t status = T_COSE_ERR_FAIL;
 
-	mbedtls_pk_context pk = {};
+	DMSG("yo 001");
 
-	res = pem_to_mbedtls_pk(&pk);
-	if (res != TEE_SUCCESS) {
-		EMSG("pem_to_mbedtsl_pk");
-		return res;
+	status = make_key_pair(T_COSE_ALGORITHM_ES256, &signing_key);
+	if (status != 0) {
+		EMSG("make_key_pair() status=%x", status);
+		return TEE_ERROR_GENERIC;
 	}
 
-	/*
-	 * TODO: set-up signer and verifier with pk originated from the test
-	 * PEM string.
-	 */
-	struct t_cose_key signer = { };
+	DMSG("yo 002");
 
-	(void)signer;
+	status = public_key_from(signing_key, &verification_key);
+	if (status != 0) {
+		EMSG("public_key_from() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
 
-	return TEE_SUCCESS;
+	size_t sig_size = 0;
+	status = t_cose_crypto_sig_size(T_COSE_ALGORITHM_ES256, signing_key, &sig_size);
+	if (status != 0 || sig_size != 2 * 32) {
+		EMSG("t_cose_crypto_sig_size() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
+
+	/* Simple t_cose_hash_* test */
+	const char msg[] = "hello, world!";
+	unsigned char hash_buffer[TEE_SHA256_HASH_SIZE] = { };
+	struct q_useful_buf_c digest = NULL_Q_USEFUL_BUF_C;
+	status = t_cose_hash_test((struct q_useful_buf_c) { msg, strlen(msg) },
+				  (struct q_useful_buf) { hash_buffer,
+							  TEE_SHA256_HASH_SIZE },
+				  &digest);
+	if (res != TEE_SUCCESS) {
+		EMSG("t_cose_hash_test() res=%x", res);
+		return TEE_ERROR_GENERIC;
+	}
+
+	IMSG("sha256(\"hello, world!\"):");
+	hexdump((const char *)hash_buffer, sizeof(hash_buffer));
+
+	/* Simple signing and verification test */
+	unsigned char sig_buffer[64] = { };
+	struct q_useful_buf_c sig = NULL_Q_USEFUL_BUF_C;
+	status = t_cose_sign_test(T_COSE_ALGORITHM_ES256, signing_key, digest,
+				  (struct q_useful_buf) { sig_buffer, 64 },
+				  &sig);
+	if (status != 0) {
+		EMSG("t_cose_sign_test() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
+
+	IMSG("ES256(\"hello, world!\"):");
+	hexdump((const char*)sig.ptr, sig.len);
+
+	status = t_cose_verify_test(T_COSE_ALGORITHM_ES256, verification_key,
+				    digest, sig);
+	if (status != 0) {
+		EMSG("t_cose_verify_test() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
+
+	IMSG("Good bye!");
+
+	return res;
 }
