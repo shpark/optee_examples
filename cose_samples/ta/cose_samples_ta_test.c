@@ -44,10 +44,26 @@
 	"-----BEGIN EC PRIVATE KEY-----\n"					\
 	"MHcCAQEEIEeY3Gcx2/t191Uwxb56IfyC5EFWALhb3MOyKfYk9oHZoAoGCCqGSM49"	\
 	"AwEHoUQDQgAE7u1Af1U3W+X8dPKWRHzymYp+oaJRiH37OUUKvc9cD839VZYDB4uv"	\
-	"5LYj9XsF0qca9LWFn4NBzB+Zh+dtkaH68Q=="					\
+	"5LYj9XsF0qca9LWFn4NBzB+Zh+dtkaH68Q==\n"					\
 	"-----END EC PRIVATE KEY-----"
 
+#define PUBLIC_KEY_primev256v1_PEM						\
+	"-----BEGIN PUBLIC KEY-----\n"						\
+	"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7u1Af1U3W+X8dPKWRHzymYp+oaJR"	\
+	"iH37OUUKvc9cD839VZYDB4uv5LYj9XsF0qca9LWFn4NBzB+Zh+dtkaH68Q==\n"		\
+	"-----END PUBLIC KEY-----"
+
+/* FIXME? */
+
+/* P-256 public key in uncompressed format */
+static unsigned char point[1 + 2 * 32] = { };
+
+/* EC key private value */
+static unsigned char d[32] = { };
+
 static const unsigned char private_key_pem[] = PRIVATE_KEY_prime256v1_PEM;
+
+static const unsigned char public_key_pem[] = PUBLIC_KEY_primev256v1_PEM;
 
 /**
  * @brief A hex dump utility
@@ -74,14 +90,54 @@ static void hexdump(const char *buf, size_t len)
 static int my_entropy(void *data, unsigned char *seed, size_t seed_len)
 {
 	(void)data;
-
-	DMSG("what?");
-
 	TEE_GenerateRandom(seed, seed_len);
-
-	DMSG("huh?");
-
 	return 0;
+}
+
+static TEE_Result mbedtls_parse_pubkey_pem_test(void)
+{
+	mbedtls_pk_context pk = { };
+	int status = 0;
+
+	status = mbedtls_pk_parse_public_key(&pk,
+					     public_key_pem,
+					     sizeof(public_key_pem));
+	if (status != 0) {
+		EMSG("mbedtls_pk_parse_public_key() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
+
+	IMSG("pk type=%d", mbedtls_pk_get_type(&pk));
+
+	mbedtls_ecp_keypair *ecp = mbedtls_pk_ec(pk);
+
+	IMSG("group id=%d", mbedtls_ecp_keypair_get_group_id(ecp));
+
+	mbedtls_ecp_group group = { };
+	mbedtls_ecp_point q = { };
+
+	status = mbedtls_ecp_export(ecp, &group, NULL, &q);
+	if (status != 0) {
+		EMSG("mbedtls_ecp_export status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
+
+	unsigned char q_buffer[1 + 2 * 32] = { };
+	size_t olen = 0;
+
+	status = mbedtls_ecp_point_write_binary(&group, &q,
+						MBEDTLS_ECP_PF_UNCOMPRESSED,
+						&olen,
+						q_buffer, sizeof(q_buffer));
+	if (status != 0) {
+		EMSG("mbedtls_ecp_point_write_binary() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
+
+	DMSG("Q:");
+	hexdump((const char *)q_buffer, sizeof(q_buffer));
+
+	return TEE_SUCCESS;
 }
 
 static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
@@ -152,11 +208,11 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 
 	/* Export the private key */
 	mbedtls_ecp_group grp = { };
-	mbedtls_mpi d = { };
+	mbedtls_mpi ec_private_value = { };
 	mbedtls_ecp_point q = { };
 
 	/* XXX: what would happen if `ecp` doesn't have `d` (i.e., pubkey)? */
-	status = mbedtls_ecp_export(ecp, &grp, &d, &q);
+	status = mbedtls_ecp_export(ecp, &grp, &ec_private_value, &q);
 	if (status != 0) {
 		EMSG("mbedtls_ecp_export() status=%x", status);
 		return TEE_ERROR_GENERIC;
@@ -176,7 +232,7 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 
 	DMSG("ugh 006");
 
-	status = mbedtls_mpi_write_binary(&d, d_buf, d_buf_len);
+	status = mbedtls_mpi_write_binary(&ec_private_value, d_buf, d_buf_len);
 	if (status) {
 		EMSG("mbedtls_mpi_write_binary() status=%x", status);
 		return TEE_ERROR_GENERIC;
@@ -221,10 +277,6 @@ enum t_cose_err_t make_key_pair(int32_t cose_algorithm_id,
 
 	DMSG("eek 001");
 
-	/* Set buffer attributes of `obj` with values stored in `pk` */
-	unsigned char point[1 + 2 * 32] = { }; /* uncompressed P-256 point */
-	unsigned char d[32] = { };
-
 	res = pem_to_mbedtls_pk(&pk, point, sizeof(point), d, sizeof(d));
 	if (res != TEE_SUCCESS) {
 		EMSG("pem_to_mbedtls_pk()");
@@ -256,7 +308,9 @@ enum t_cose_err_t make_key_pair(int32_t cose_algorithm_id,
 }
 
 static enum t_cose_err_t public_key_from(struct t_cose_key signing_key,
-					 struct t_cose_key *out_public_key)
+					 struct t_cose_key *out_public_key,
+					 unsigned char *point_buf,
+					 size_t point_buf_len)
 {
 	TEE_ObjectHandle keypair = signing_key.k.key_obj;
 	TEE_Result res = TEE_ERROR_BAD_PARAMETERS;
@@ -266,6 +320,10 @@ static enum t_cose_err_t public_key_from(struct t_cose_key signing_key,
 	TEE_ObjectHandle obj = TEE_HANDLE_NULL;
 
 	DMSG("ding 001");
+
+	/* FIXME: support different key size */
+	if (point_buf_len < 2 * 32)
+		return TEE_ERROR_SHORT_BUFFER;
 
 	res = TEE_GetObjectInfo1(keypair, &info);
 
@@ -287,38 +345,29 @@ static enum t_cose_err_t public_key_from(struct t_cose_key signing_key,
 	if (res != TEE_SUCCESS)
 		return res;
 
-	/*
-	 * XXX: this buffer resides in stack, and its content may be clobbered
-	 * later, leading the signature verification fail...
-	 *
-	 * Even worse, attribute X and Y are pointing to the same buffer now.
-	 * Yet I am too tired to fix this now. I will fix it later.
-	 *
-	 * How to fix? Allocate a buffer that lives long enough and make the
-	 * attribute buffer pointer points to that buffer...
-	 */
-	unsigned char buf[32] = { }; /* FIXME: Don't use fixed size buffer... */
-	uint32_t size = sizeof(buf);
-
 	DMSG("ding 004");
 
+	uint32_t size = 32; /* FIXME: support different key size */
+
 	res = TEE_GetObjectBufferAttribute(keypair, TEE_ATTR_ECC_PUBLIC_VALUE_X,
-					   buf, &size);
-	if (size != sizeof(buf))
+					   point_buf, &size);
+	if (size != 32)
 		res = TEE_ERROR_BAD_STATE;
 	if (res != TEE_SUCCESS)
 		goto out;
 
-	TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, buf, size);
+	TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PUBLIC_VALUE_X, point_buf,
+			     size);
 
 	res = TEE_GetObjectBufferAttribute(keypair, TEE_ATTR_ECC_PUBLIC_VALUE_Y,
-					   buf, &size);
-	if (size != sizeof(buf))
+					   &point_buf[32], &size);
+	if (size != 32)
 		res = TEE_ERROR_BAD_STATE;
 	if (res != TEE_SUCCESS)
 		goto out;
 
-	TEE_InitRefAttribute(&attrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y, buf, size);
+	TEE_InitRefAttribute(&attrs[1], TEE_ATTR_ECC_PUBLIC_VALUE_Y,
+			     &point_buf[32], size);
 
 	TEE_InitValueAttribute(&attrs[2], TEE_ATTR_ECC_CURVE, curve, 0);
 
@@ -381,6 +430,15 @@ TEE_Result run_tests(void)
 	struct t_cose_key signing_key = { };
 	struct t_cose_key verification_key = { };
 	enum t_cose_err_t status = T_COSE_ERR_FAIL;
+	unsigned char public_key_buffer[2 * 32] =  { };
+
+	DMSG("yo 000");
+
+	status = mbedtls_parse_pubkey_pem_test();
+	if (status != 0) {
+		EMSG("mbedtls_parse_pubkey_pem_test() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
 
 	DMSG("yo 001");
 
@@ -392,7 +450,8 @@ TEE_Result run_tests(void)
 
 	DMSG("yo 002");
 
-	status = public_key_from(signing_key, &verification_key);
+	status = public_key_from(signing_key, &verification_key,
+				 public_key_buffer, sizeof(public_key_buffer));
 	if (status != 0) {
 		EMSG("public_key_from() status=%x", status);
 		return TEE_ERROR_GENERIC;
