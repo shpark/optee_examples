@@ -16,3 +16,4 @@
 - [ ] Support different algorithm(s)
   - [ ] ES384
   - [ ] EdDSA
+- [ ] Figure out how to reconstruct TBS from a COSE_Sign1 object with QCBOR APIs

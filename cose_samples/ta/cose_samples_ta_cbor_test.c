@@ -10,15 +10,17 @@
 #include <trace.h>
 
 #include <t_cose/t_cose_common.h>
+#include <t_cose/t_cose_sign1_sign.h>
+#include <t_cose/t_cose_sign1_verify.h>
+#include <t_cose_standard_constants.h>
 #include <t_cose_make_test_pub_key.h>
 
-#include "compiler.h"
 #include "cose_samples_ta_test.h"
 #include "qcbor/UsefulBuf.h"
+#include "qcbor/qcbor_common.h"
 #include "qcbor/qcbor_encode.h"
 #include "t_cose/q_useful_buf.h"
-#include "t_cose/t_cose_sign1_sign.h"
-#include "t_cose/t_cose_sign1_verify.h"
+#include "t_cose_crypto.h"
 #include "t_cose_util.h"
 
 /**
@@ -86,22 +88,126 @@ static inline enum t_cose_err_t verify_cose_sign1_simple(
 	return status;
 }
 
-static enum t_cose_err_t __maybe_unused encode_protected_parameters(
+static inline struct q_useful_buf_c encode_protected_parameters(
 	int32_t cose_algorithm_id,
-	QCBOREncodeContext *ctx)
+	struct q_useful_buf protected_parameters_buffer)
 {
-	(void)cose_algorithm_id;
-	(void)ctx;
+	QCBOREncodeContext encode_ctx = { };
+	struct q_useful_buf_c protected_parameters = NULL_Q_USEFUL_BUF_C;
+	QCBORError qcbor_result = 0;
 
-	return T_COSE_ERR_FAIL;
+	QCBOREncode_Init(&encode_ctx, protected_parameters_buffer);
+
+	QCBOREncode_OpenMap(&encode_ctx);
+	QCBOREncode_AddInt64ToMapN(&encode_ctx,
+				   COSE_HEADER_PARAM_ALG,
+				   cose_algorithm_id);
+	QCBOREncode_CloseMap(&encode_ctx);
+	
+	qcbor_result = QCBOREncode_Finish(&encode_ctx,
+					  &protected_parameters);
+	if (qcbor_result != QCBOR_SUCCESS)
+		return NULL_Q_USEFUL_BUF_C;
+
+	/* XXX: How to do error check? */
+
+	return protected_parameters;
+}
+
+/**
+ * @brief Encode and sign a COSE_Sign1 object with `create_tbs()` function
+ */
+static inline enum t_cose_err_t encode_cose_sign1_with_create_tbs(
+	struct t_cose_key signing_key,
+	struct q_useful_buf_c protected_parameters,
+	struct q_useful_buf_c payload,
+	struct q_useful_buf cose_buffer,
+	struct q_useful_buf_c *cose)
+{
+	Q_USEFUL_BUF_MAKE_STACK_UB(tbs_buffer, 512);
+	struct q_useful_buf_c tbs = NULL_Q_USEFUL_BUF_C;
+	Q_USEFUL_BUF_MAKE_STACK_UB(tbs_hash_buffer, 32);
+	struct q_useful_buf_c tbs_hash = NULL_Q_USEFUL_BUF_C;
+	enum t_cose_err_t status = 0;
+	QCBORError qcbor_result = 0;
+
+	/* Prepare TBS and compute hash */
+	status = create_tbs(protected_parameters, NULL_Q_USEFUL_BUF_C, payload,
+			    tbs_buffer, &tbs);
+	if (status != 0)
+		return status;
+
+	struct t_cose_crypto_hash hash_ctx = { };
+	t_cose_crypto_hash_start(&hash_ctx, COSE_ALGORITHM_SHA_256);
+	t_cose_crypto_hash_update(&hash_ctx, tbs);
+	t_cose_crypto_hash_finish(&hash_ctx, tbs_hash_buffer, &tbs_hash);
+
+	IMSG("TBS hash:");
+	hexdump1(tbs_hash.ptr, tbs_hash.len);
+
+	/* Sign TBS hash */
+	Q_USEFUL_BUF_MAKE_STACK_UB(sig_buffer, 64);
+	struct q_useful_buf_c sig = NULL_Q_USEFUL_BUF_C;
+
+	DMSG("yoink 001");
+
+	status = t_cose_crypto_sign(COSE_ALGORITHM_ES256,
+				    signing_key,
+				    tbs_hash,
+				    sig_buffer,
+				    &sig);
+	if (status != 0) {
+		/* FIXME?: Maybe need to do some clean-ups */
+		return status;
+	}
+
+	DMSG("yoink 002");
+
+	/* Now put things together into a COSE_Sign1 object... */
+	QCBOREncodeContext encode_ctx = { };
+
+	QCBOREncode_Init(&encode_ctx, cose_buffer);
+
+	/* XXX: Omit tag for simplicity... */
+
+	QCBOREncode_OpenArray(&encode_ctx);
+
+	/* Protected parameters */
+	QCBOREncode_AddBytes(&encode_ctx, protected_parameters);
+
+	/* Unprotected parameters (empty) */
+	QCBOREncode_OpenMap(&encode_ctx);
+	QCBOREncode_CloseMap(&encode_ctx);
+
+	/* Payload */
+	QCBOREncode_AddBytes(&encode_ctx, payload);
+
+	/* Signature */
+	QCBOREncode_AddBytes(&encode_ctx, sig);
+
+	QCBOREncode_CloseArray(&encode_ctx);
+
+	DMSG("yoink 003");
+
+	qcbor_result = QCBOREncode_Finish(&encode_ctx, cose);
+	if (qcbor_result == QCBOR_ERR_BUFFER_TOO_SMALL) {
+		return T_COSE_ERR_TOO_SMALL;
+	} else if (qcbor_result != QCBOR_SUCCESS) {
+		return T_COSE_ERR_SIG_FAIL;
+	}
+
+	return T_COSE_SUCCESS;
 }
 
 /**
  * @brief Encode and sign a COSE_Sign1 object mostly sticking to QCBOR APIs
  */
-static inline __maybe_unused enum t_cose_err_t encode_cose_sign1_more_steps(
+static inline enum t_cose_err_t __maybe_unused encode_cose_sign1_with_qcbor(
 	struct t_cose_key signing_key,
+	struct q_useful_buf_c protected_parameters,
 	struct q_useful_buf_c payload,
+	struct q_useful_buf tbs_buffer,
+	struct q_useful_buf_c *tbs,
 	struct q_useful_buf cose_buffer,
 	struct q_useful_buf_c *cose)
 {
@@ -109,6 +215,43 @@ static inline __maybe_unused enum t_cose_err_t encode_cose_sign1_more_steps(
 	(void)payload;
 	(void)cose_buffer;
 	(void)cose;
+
+	/*
+	 * Sig_structure = [
+	 *    context : "Signature" / "Signature1" / "CounterSignature",
+	 *    body_protected : empty_or_serialized_map,
+	 *    ? sign_protected : empty_or_serialized_map,
+	 *    external_aad : bstr,
+	 *    payload : bstr
+	 * ]
+	 */
+
+	QCBOREncodeContext cbor_ctx;
+
+	QCBOREncode_Init(&cbor_ctx, tbs_buffer);
+
+	QCBOREncode_OpenArray(&cbor_ctx);
+
+	/* Context ("Signature1") */
+	QCBOREncode_AddSZString(&cbor_ctx, COSE_SIG_CONTEXT_STRING_SIGNATURE1);
+
+	/* Protected header (Now let's only add `alg` to the header...) */
+	QCBOREncode_AddBytes(&cbor_ctx, protected_parameters);
+
+	/* AAD (XXX: Is this enough for adding empty AAD?) */
+	QCBOREncode_AddBytes(&cbor_ctx, NULL_Q_USEFUL_BUF_C);
+
+	/* Payload */
+	QCBOREncode_AddBytes(&cbor_ctx, payload);
+
+	QCBOREncode_CloseArray(&cbor_ctx);
+
+	QCBORError cbor_error = QCBOREncode_Finish(&cbor_ctx, tbs);
+	if (cbor_error == QCBOR_ERR_BUFFER_TOO_SMALL) {
+		return T_COSE_ERR_TOO_SMALL;
+	} else if (cbor_error != QCBOR_SUCCESS) {
+		return T_COSE_ERR_CBOR_FORMATTING;
+	}
 
 	return T_COSE_ERR_FAIL;
 }
@@ -128,12 +271,13 @@ TEE_Result run_cbor_cose_tests(void)
 		strlen(PAYLOAD_STRING)
 	};
 
-	/* For COSE_Sign1 object created by `encode_cose_sign1_simple()` */
+	/* For `encode_cose_sign1_simple()` */
 	Q_USEFUL_BUF_MAKE_STACK_UB(cose_buffer1, 512);
 	struct q_useful_buf_c cose1 = NULL_Q_USEFUL_BUF_C;
 
-	/* For COSE_Sign1 object created by `encode_cose_sign1_more_steps()` */
-	/* TODO */
+	/* For `encode_cose_sign1_with_create_tbs()` */
+	Q_USEFUL_BUF_MAKE_STACK_UB(cose_buffer2, 512);
+	struct q_useful_buf_c cose2 = NULL_Q_USEFUL_BUF_C;
 
 	/* Set up keys (FIXME: redundant tasks...) */
 	status = make_key_pair(T_COSE_ALGORITHM_ES256, &signing_key);
@@ -162,35 +306,44 @@ TEE_Result run_cbor_cose_tests(void)
 	/* Print encoded COSE_Sign1 object in hex string... */
 	hexdump1(cose1.ptr, cose1.len);
 
+	/* Verify `cose1` with t_cose APIs */
 	status = verify_cose_sign1_simple(verification_key, payload, cose1);
 	if (status != 0) {
-		EMSG("verify_cose_sign1_simple() status=%x", status);
+		EMSG("verify_cose_sign1_simple(cose1) status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
 
-	/* TODO: Verify `cose1` with t_cose APIs */
+	/* Encode/sign and verify COSE_Sign1 object with create_tbs() */
+	struct q_useful_buf_c protected_params = { };
+	UsefulBuf_MAKE_STACK_UB(protected_params_buffer, 64);
+	QCBOREncodeContext encode_ctx = { };
+	
+	QCBOREncode_Init(&encode_ctx, protected_params_buffer);
 
-	/* Create a TBS hash */
+	protected_params = encode_protected_parameters(T_COSE_ALGORITHM_ES256,
+						       protected_params_buffer);
+	if (q_useful_buf_c_is_null(protected_params)) {
+		return TEE_ERROR_GENERIC;
+	}
 
-	/*
-	 * NOTE: `protected_parameters` has to be a a `bstr`.
-	 */
+	status = encode_cose_sign1_with_create_tbs(signing_key,
+						   protected_params,
+						   payload,
+						   cose_buffer2, &cose2);
+	if (status != 0) {
+		EMSG("encode_cose_sign1_with_create_tbs() status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
 
-	/*
-	create_tbs(struct q_useful_buf_c protected_parameters,
-		   struct q_useful_buf_c aad,
-		   struct q_useful_buf_c payload,
-		   struct q_useful_buf buffer_for_tbs,
-		   struct q_useful_buf_c *tbs)
-	*/
+	IMSG("Cose_Sign1 created with create_tbs() helper function...");
+	hexdump1(cose2.ptr, cose2.len);
 
-	/* Prepare protected parameters */
-	/* See `encode_protected_parameters(alg, cbor_encode_ctx)` */
-
-	/* Sign TBS hash and output a COSE_Sign1 object */
-
-	/* Try to reconstruct TBS hash from a COSE_Sign1 object */
-
+	/* Verify COSE_Sign1 object created with `create_tbs()` */
+	status = verify_cose_sign1_simple(verification_key, payload, cose2);
+	if (status != 0) {
+		EMSG("verify_cose_sign1_simple(cose2) status=%x", status);
+		return TEE_ERROR_GENERIC;
+	}
 
 	IMSG("run_cbor_cose_tests: Good bye!");
 

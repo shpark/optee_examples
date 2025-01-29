@@ -50,7 +50,7 @@ void hexdump(const char *buf, size_t len)
 	}
 }
 
-#define NUM_BYTES_IN_ROW	32
+#define NUM_BYTES_IN_ROW	80
 
 void hexdump1(const char *buf, size_t len)
 {
