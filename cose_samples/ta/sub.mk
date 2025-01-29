@@ -1,7 +1,9 @@
 global-incdirs-y += include
 
 srcs-y += cose_samples_ta.c
-srcs-y += cose_samples_ta_test.c
+srcs-y += cose_samples_ta_crypto_test.c
+srcs-y += cose_samples_ta_cbor_test.c
+srcs-y += cose_samples_test_util.c
 
 # QCBOR
 global-incdirs-y += third_party/QCBOR/inc

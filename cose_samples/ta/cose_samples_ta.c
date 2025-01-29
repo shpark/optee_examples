@@ -16,7 +16,9 @@
 
 TEE_Result TA_CreateEntryPoint(void)
 {
-	run_tests();
+	run_crypto_tests();
+
+	run_cbor_cose_tests();
 
 	return TEE_SUCCESS;
 }

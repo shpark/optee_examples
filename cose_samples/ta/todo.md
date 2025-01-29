@@ -13,3 +13,6 @@
   - [ ] Sign TBS hash and output a COSE_Sign1 object
   - [ ] Re-coustruct TBS hash from given COSE_Sign1 object
   - [ ] Signature verification test
+- [ ] Support different algorithm(s)
+  - [ ] ES384
+  - [ ] EdDSA
