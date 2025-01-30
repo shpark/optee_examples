@@ -204,20 +204,14 @@ static inline enum t_cose_err_t encode_cose_sign1_with_create_tbs(
 /**
  * @brief Encode and sign a COSE_Sign1 object mostly sticking to QCBOR APIs
  */
-static inline enum t_cose_err_t __maybe_unused encode_cose_sign1_with_qcbor(
+static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 	struct t_cose_key signing_key,
-	struct q_useful_buf_c protected_parameters,
+	int64_t alg,
 	struct q_useful_buf_c payload,
 	struct q_useful_buf tbs_buffer,
-	struct q_useful_buf_c *tbs,
 	struct q_useful_buf cose_buffer,
 	struct q_useful_buf_c *cose)
 {
-	(void)signing_key;
-	(void)payload;
-	(void)cose_buffer;
-	(void)cose;
-
 	/*
 	 * Sig_structure = [
 	 *    context : "Signature" / "Signature1" / "CounterSignature",
@@ -228,34 +222,130 @@ static inline enum t_cose_err_t __maybe_unused encode_cose_sign1_with_qcbor(
 	 * ]
 	 */
 
-	QCBOREncodeContext cbor_ctx;
+	QCBOREncodeContext encode_ctx;
+	struct q_useful_buf_c protected_parameters = NULL_Q_USEFUL_BUF_C;
+	struct q_useful_buf_c tbs = NULL_Q_USEFUL_BUF_C;
+	Q_USEFUL_BUF_MAKE_STACK_UB(tbs_hash_buffer, 32);
+	struct q_useful_buf_c tbs_hash = NULL_Q_USEFUL_BUF_C;
+	Q_USEFUL_BUF_MAKE_STACK_UB(sig_buffer, 64);
+	struct q_useful_buf_c sig = NULL_Q_USEFUL_BUF_C;
+	enum t_cose_err_t status = 0;
+	QCBORError qcbor_result = 0;
 
-	QCBOREncode_Init(&cbor_ctx, tbs_buffer);
+	DMSG("yikes 001");
 
-	QCBOREncode_OpenArray(&cbor_ctx);
+	QCBOREncode_Init(&encode_ctx, tbs_buffer);
+
+	QCBOREncode_OpenArray(&encode_ctx);
 
 	/* Context ("Signature1") */
-	QCBOREncode_AddSZString(&cbor_ctx, COSE_SIG_CONTEXT_STRING_SIGNATURE1);
+	QCBOREncode_AddSZString(&encode_ctx,
+				COSE_SIG_CONTEXT_STRING_SIGNATURE1);
 
 	/* Protected header (Now let's only add `alg` to the header...) */
-	QCBOREncode_AddBytes(&cbor_ctx, protected_parameters);
+	QCBOREncode_BstrWrap(&encode_ctx);
+	QCBOREncode_OpenMap(&encode_ctx);
+	QCBOREncode_AddInt64ToMapN(&encode_ctx,
+				   COSE_HEADER_PARAM_ALG, alg);
+	QCBOREncode_CloseMap(&encode_ctx);
+	QCBOREncode_CloseBstrWrap(&encode_ctx, &protected_parameters);
+
+	DMSG("yikes 002");
 
 	/* AAD (XXX: Is this enough for adding empty AAD?) */
-	QCBOREncode_AddBytes(&cbor_ctx, NULL_Q_USEFUL_BUF_C);
+	QCBOREncode_AddBytes(&encode_ctx, NULL_Q_USEFUL_BUF_C);
+
+	DMSG("yikes 003");
 
 	/* Payload */
-	QCBOREncode_AddBytes(&cbor_ctx, payload);
+	QCBOREncode_AddBytes(&encode_ctx, payload);
 
-	QCBOREncode_CloseArray(&cbor_ctx);
+	QCBOREncode_CloseArray(&encode_ctx);
 
-	QCBORError cbor_error = QCBOREncode_Finish(&cbor_ctx, tbs);
+	DMSG("yikes 004");
+
+	QCBORError cbor_error = QCBOREncode_Finish(&encode_ctx, &tbs);
 	if (cbor_error == QCBOR_ERR_BUFFER_TOO_SMALL) {
 		return T_COSE_ERR_TOO_SMALL;
 	} else if (cbor_error != QCBOR_SUCCESS) {
 		return T_COSE_ERR_CBOR_FORMATTING;
 	}
 
-	return T_COSE_ERR_FAIL;
+	IMSG("TBS:");
+	hexdump1(tbs.ptr, tbs.len);
+
+	/* Compute hash */
+	struct t_cose_crypto_hash hash_ctx = { };
+
+	status = t_cose_crypto_hash_start(&hash_ctx,
+					  COSE_ALGORITHM_SHA_256);
+	if (status != 0) {
+		EMSG("t_cose_crypto_hash_start() status=%x", status);
+		return status;
+	}
+
+	DMSG("yikes 005");
+
+	t_cose_crypto_hash_update(&hash_ctx, tbs);
+
+	status = t_cose_crypto_hash_finish(&hash_ctx, tbs_hash_buffer,
+					   &tbs_hash);
+	if (status != 0) {
+		EMSG("t_cose_crypto_hash_finish() status=%x", status);
+		return status;
+	}
+
+	DMSG("yikes 006");
+
+	/* Sign TBS hash */
+	status = t_cose_crypto_sign(COSE_ALGORITHM_ES256,
+				    signing_key, tbs_hash,
+				    sig_buffer, &sig);
+	if (status != 0) {
+		EMSG("t_cose_crypto_sign() status=%x", status);
+		return status;
+	}
+
+	/* XXX: Seems it okay to re-use QCBOREndodeContext */
+	QCBOREncode_Init(&encode_ctx, cose_buffer);
+
+	QCBOREncode_OpenArray(&encode_ctx);
+
+	/* Protected parameters */
+	/*
+	 * NOTE: The following won't work. It has extra leading bytes...
+	 *
+	 *     QCBOREncode_AddBytes(&encode_ctx, protected_parameters);
+	 */
+	QCBOREncode_BstrWrap(&encode_ctx);
+	QCBOREncode_OpenMap(&encode_ctx);
+	QCBOREncode_AddInt64ToMapN(&encode_ctx,
+				   COSE_HEADER_PARAM_ALG, alg);
+	QCBOREncode_CloseMap(&encode_ctx);
+	QCBOREncode_CloseBstrWrap(&encode_ctx, NULL /* This can be NULL! */);
+
+	/* Unprotected parameters */
+	QCBOREncode_OpenMap(&encode_ctx);
+	QCBOREncode_CloseMap(&encode_ctx);
+
+	/* Payload */
+	QCBOREncode_AddBytes(&encode_ctx, payload);
+
+	/* Signature */
+	QCBOREncode_AddBytes(&encode_ctx, sig);
+	QCBOREncode_CloseArray(&encode_ctx);
+
+	DMSG("yikes 007");
+
+	qcbor_result = QCBOREncode_Finish(&encode_ctx, cose);
+	if (qcbor_result != QCBOR_SUCCESS) {
+		return T_COSE_ERR_FAIL;
+	}
+
+	IMSG("Cose_Sign1:");
+	hexdump1(cose->ptr, cose->len);
+
+	return T_COSE_SUCCESS;
 }
 
 /**
@@ -467,6 +557,28 @@ TEE_Result run_cbor_cose_tests(void)
 	if (status != 0) {
 		EMSG("verify_cose_sign1_by_building_tbs() status=%x", status);
 		return TEE_ERROR_GENERIC;
+	}
+
+	/* Can we do some more manual work? */
+	Q_USEFUL_BUF_MAKE_STACK_UB(tbs_buffer, 512);
+	Q_USEFUL_BUF_MAKE_STACK_UB(cose_buffer3, 512);
+	struct q_useful_buf_c cose3 = NULL_Q_USEFUL_BUF_C;
+
+	status = encode_cose_sign1_with_qcbor(signing_key,
+					      COSE_ALGORITHM_ES256,
+					      payload,
+					      tbs_buffer,
+					      cose_buffer3,
+					      &cose3);
+	if (status != 0) {
+		EMSG("encode_cose_sign1_with_qcbor() status=%x", status);
+		return status;
+	}
+
+	status = verify_cose_sign1_simple(verification_key, payload, cose3);
+	if (status != 0) {
+		EMSG("verify_cose_sign1_simple() status=%x", status);
+		return status;
 	}
 
 	IMSG("run_cbor_cose_tests: Good bye!");
