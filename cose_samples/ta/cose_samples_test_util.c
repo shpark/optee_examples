@@ -98,8 +98,6 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 
 	mbedtls_ctr_drbg_init(&ctr_dbrg);
 
-	DMSG("ugh 000a");
-
 	status = mbedtls_ctr_drbg_seed(&ctr_dbrg,
 				       my_entropy,
 				       NULL,
@@ -109,11 +107,7 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 		return TEE_ERROR_GENERIC;
 	}
 
-	DMSG("ugh 000c");
-
 	mbedtls_pk_init(pk);
-
-	DMSG("ugh 001");
 
 	status = mbedtls_pk_parse_key(pk,
 				      private_key_pem,
@@ -125,8 +119,6 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 		EMSG("mbedtls_pk_parse_key() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
-
-	DMSG("ugh 002");
 
 	/* Check PEM key type */
 	/*
@@ -140,8 +132,6 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 		return TEE_ERROR_GENERIC;
 	}
 
-	DMSG("ugh 003");
-
 	ecp = mbedtls_pk_ec(*pk);
 
 	/* Check ECP group id */
@@ -149,8 +139,6 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 		EMSG("mbedtls_ecp_keypair_get_group_id() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
-
-	DMSG("ugh 004");
 
 	/* Export the private key */
 	mbedtls_ecp_group grp = { };
@@ -164,8 +152,6 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 		return TEE_ERROR_GENERIC;
 	}
 
-	DMSG("ugh 005");
-
 	size_t olen = 0;
 	status = mbedtls_ecp_point_write_binary(&grp, &q,
 						MBEDTLS_ECP_PF_UNCOMPRESSED,
@@ -175,8 +161,6 @@ static TEE_Result pem_to_mbedtls_pk(mbedtls_pk_context *pk,
 		EMSG("mbedtls_ecp_point_write_binary() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
-
-	DMSG("ugh 006");
 
 	status = mbedtls_mpi_write_binary(&ec_private_value, d_buf, d_buf_len);
 	if (status) {
@@ -221,15 +205,11 @@ enum t_cose_err_t make_key_pair(int32_t cose_algorithm_id,
 
 	mbedtls_pk_context pk = { };
 
-	DMSG("eek 001");
-
 	res = pem_to_mbedtls_pk(&pk, point, sizeof(point), d, sizeof(d));
 	if (res != TEE_SUCCESS) {
 		EMSG("pem_to_mbedtls_pk()");
 		return T_COSE_ERR_FAIL;
 	}
-
-	DMSG("eek 002");
 
 	TEE_InitRefAttribute(&attrs[0], TEE_ATTR_ECC_PRIVATE_VALUE, d,
 			     sizeof(d));
@@ -265,8 +245,6 @@ enum t_cose_err_t public_key_from(struct t_cose_key private_key,
 	TEE_Attribute attrs[3] = { };
 	TEE_ObjectHandle obj = TEE_HANDLE_NULL;
 
-	DMSG("ding 001");
-
 	/* FIXME: support different key size */
 	if (point_buf_len < 2 * 32)
 		return TEE_ERROR_SHORT_BUFFER;
@@ -276,22 +254,16 @@ enum t_cose_err_t public_key_from(struct t_cose_key private_key,
 	if (info.objectType != TEE_TYPE_ECDSA_KEYPAIR)
 		return T_COSE_ERR_INVALID_ARGUMENT;
 
-	DMSG("ding 002");
-
 	res = TEE_GetObjectValueAttribute(keypair, TEE_ATTR_ECC_CURVE, &curve,
 					  NULL);
 	if (res != TEE_SUCCESS)
 		return T_COSE_ERR_INVALID_ARGUMENT;
-
-	DMSG("ding 003");
 
 	res = TEE_AllocateTransientObject(TEE_TYPE_ECDSA_PUBLIC_KEY,
 					  info.maxKeySize,
 					  &obj);
 	if (res != TEE_SUCCESS)
 		return res;
-
-	DMSG("ding 004");
 
 	uint32_t size = 32; /* FIXME: support different key size */
 

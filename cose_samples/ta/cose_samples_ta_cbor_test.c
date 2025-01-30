@@ -144,14 +144,12 @@ static inline enum t_cose_err_t encode_cose_sign1_with_create_tbs(
 	t_cose_crypto_hash_update(&hash_ctx, tbs);
 	t_cose_crypto_hash_finish(&hash_ctx, tbs_hash_buffer, &tbs_hash);
 
-	IMSG("TBS hash:");
+	DMSG("TBS hash:");
 	hexdump1(tbs_hash.ptr, tbs_hash.len);
 
 	/* Sign TBS hash */
 	Q_USEFUL_BUF_MAKE_STACK_UB(sig_buffer, 64);
 	struct q_useful_buf_c sig = NULL_Q_USEFUL_BUF_C;
-
-	DMSG("yoink 001");
 
 	status = t_cose_crypto_sign(COSE_ALGORITHM_ES256,
 				    signing_key,
@@ -162,8 +160,6 @@ static inline enum t_cose_err_t encode_cose_sign1_with_create_tbs(
 		/* FIXME?: Maybe need to do some clean-ups */
 		return status;
 	}
-
-	DMSG("yoink 002");
 
 	/* Now put things together into a COSE_Sign1 object... */
 	QCBOREncodeContext encode_ctx = { };
@@ -188,8 +184,6 @@ static inline enum t_cose_err_t encode_cose_sign1_with_create_tbs(
 	QCBOREncode_AddBytes(&encode_ctx, sig);
 
 	QCBOREncode_CloseArray(&encode_ctx);
-
-	DMSG("yoink 003");
 
 	qcbor_result = QCBOREncode_Finish(&encode_ctx, cose);
 	if (qcbor_result == QCBOR_ERR_BUFFER_TOO_SMALL) {
@@ -232,8 +226,6 @@ static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 	enum t_cose_err_t status = 0;
 	QCBORError qcbor_result = 0;
 
-	DMSG("yikes 001");
-
 	QCBOREncode_Init(&encode_ctx, tbs_buffer);
 
 	QCBOREncode_OpenArray(&encode_ctx);
@@ -250,19 +242,13 @@ static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 	QCBOREncode_CloseMap(&encode_ctx);
 	QCBOREncode_CloseBstrWrap(&encode_ctx, &protected_parameters);
 
-	DMSG("yikes 002");
-
 	/* AAD (XXX: Is this enough for adding empty AAD?) */
 	QCBOREncode_AddBytes(&encode_ctx, NULL_Q_USEFUL_BUF_C);
-
-	DMSG("yikes 003");
 
 	/* Payload */
 	QCBOREncode_AddBytes(&encode_ctx, payload);
 
 	QCBOREncode_CloseArray(&encode_ctx);
-
-	DMSG("yikes 004");
 
 	QCBORError cbor_error = QCBOREncode_Finish(&encode_ctx, &tbs);
 	if (cbor_error == QCBOR_ERR_BUFFER_TOO_SMALL) {
@@ -271,7 +257,7 @@ static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 		return T_COSE_ERR_CBOR_FORMATTING;
 	}
 
-	IMSG("TBS:");
+	DMSG("TBS:");
 	hexdump1(tbs.ptr, tbs.len);
 
 	/* Compute hash */
@@ -284,8 +270,6 @@ static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 		return status;
 	}
 
-	DMSG("yikes 005");
-
 	t_cose_crypto_hash_update(&hash_ctx, tbs);
 
 	status = t_cose_crypto_hash_finish(&hash_ctx, tbs_hash_buffer,
@@ -294,8 +278,6 @@ static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 		EMSG("t_cose_crypto_hash_finish() status=%x", status);
 		return status;
 	}
-
-	DMSG("yikes 006");
 
 	/* Sign TBS hash */
 	status = t_cose_crypto_sign(COSE_ALGORITHM_ES256,
@@ -335,14 +317,12 @@ static inline enum t_cose_err_t encode_cose_sign1_with_qcbor(
 	QCBOREncode_AddBytes(&encode_ctx, sig);
 	QCBOREncode_CloseArray(&encode_ctx);
 
-	DMSG("yikes 007");
-
 	qcbor_result = QCBOREncode_Finish(&encode_ctx, cose);
 	if (qcbor_result != QCBOR_SUCCESS) {
 		return T_COSE_ERR_FAIL;
 	}
 
-	IMSG("Cose_Sign1:");
+	DMSG("Cose_Sign1:");
 	hexdump1(cose->ptr, cose->len);
 
 	return T_COSE_SUCCESS;
@@ -387,10 +367,10 @@ static inline enum t_cose_err_t verify_cose_sign1_by_building_tbs(
 				   COSE_HEADER_PARAM_ALG,
 				   &alg);
 
-	IMSG("alg: %ld", alg); /* alg: 0 (although expected -7) */
+	DMSG("alg: %ld", alg); /* alg: 0 (although expected -7) */
 #endif
 
-	IMSG("protected parameters:");
+	DMSG("protected parameters:");
 	hexdump1(protected_parameters.ptr, protected_parameters.len);
 
 	QCBORDecode_ExitBstrWrapped(&decode_ctx);
@@ -411,13 +391,13 @@ static inline enum t_cose_err_t verify_cose_sign1_by_building_tbs(
 
 	QCBORDecode_ExitBstrWrapped(&decode_ctx);
 
-	IMSG("payload:");
+	DMSG("payload:");
 	hexdump1(payload_from_cose.ptr, payload_from_cose.len);
 
 	/* Signature */
 	QCBORDecode_GetByteString(&decode_ctx, &sig);
 
-	IMSG("sig:");
+	DMSG("sig:");
 	hexdump1(sig.ptr, sig.len);
 
 	QCBORDecode_ExitArray(&decode_ctx);
@@ -581,7 +561,7 @@ TEE_Result run_cbor_cose_tests(void)
 		return status;
 	}
 
-	IMSG("run_cbor_cose_tests: Good bye!");
+	DMSG("run_cbor_cose_tests: Good bye!");
 
 	return TEE_SUCCESS;
 }

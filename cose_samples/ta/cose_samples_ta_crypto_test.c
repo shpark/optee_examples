@@ -133,23 +133,17 @@ TEE_Result run_crypto_tests(void)
 	enum t_cose_err_t status = T_COSE_ERR_FAIL;
 	unsigned char public_key_buffer[2 * 32] =  { };
 
-	DMSG("yo 000");
-
 	status = mbedtls_parse_pubkey_pem_test();
 	if (status != 0) {
 		EMSG("mbedtls_parse_pubkey_pem_test() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
 
-	DMSG("yo 001");
-
 	status = make_key_pair(T_COSE_ALGORITHM_ES256, &signing_key);
 	if (status != 0) {
 		EMSG("make_key_pair() status=%x", status);
 		return TEE_ERROR_GENERIC;
 	}
-
-	DMSG("yo 002");
 
 	status = public_key_from(signing_key, &verification_key,
 				 public_key_buffer, sizeof(public_key_buffer));
@@ -178,7 +172,7 @@ TEE_Result run_crypto_tests(void)
 		return TEE_ERROR_GENERIC;
 	}
 
-	IMSG("sha256(\"hello, world!\"):");
+	DMSG("sha256(\"hello, world!\"):");
 	hexdump((const char *)hash_buffer, sizeof(hash_buffer));
 
 	/* Simple signing and verification test */
@@ -192,7 +186,7 @@ TEE_Result run_crypto_tests(void)
 		return TEE_ERROR_GENERIC;
 	}
 
-	IMSG("ES256(\"hello, world!\"):");
+	DMSG("ES256(\"hello, world!\"):");
 	hexdump((const char*)sig.ptr, sig.len);
 
 	status = t_cose_verify_test(T_COSE_ALGORITHM_ES256, verification_key,
@@ -202,7 +196,7 @@ TEE_Result run_crypto_tests(void)
 		return TEE_ERROR_GENERIC;
 	}
 
-	IMSG("run_crypto_tests: Good bye!");
+	DMSG("run_crypto_tests: Good bye!");
 
 	return res;
 }
